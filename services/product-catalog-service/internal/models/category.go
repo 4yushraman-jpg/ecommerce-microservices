@@ -21,3 +21,15 @@ type CategoryByID struct {
 	ProductsPage  int       `json:"products_page"`
 	ProductsLimit int       `json:"products_limit"`
 }
+
+type CreateCategoryRequest struct {
+	Name     string `json:"name"`
+	Slug     string `json:"slug"`
+	ParentID *int   `json:"parent_id"`
+}
+
+type UpdateCategoryRequest struct {
+	Name     string `json:"name"`
+	Slug     string `json:"slug"`
+	ParentID *int   `json:"parent_id"`
+}
