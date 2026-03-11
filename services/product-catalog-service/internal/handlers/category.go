@@ -2,13 +2,17 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
+	"product-catalog-service/internal/middleware"
 	"product-catalog-service/internal/models"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -143,4 +147,149 @@ func (h *CategoryHandler) GetCategoryByIDHandler(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(category)
+}
+
+func (h *CategoryHandler) CreateCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r)
+	if !ok {
+		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if claims.Role != "admin" {
+		writeJSONError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	var req models.CreateCategoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	req.Slug = strings.ToLower(strings.TrimSpace(req.Slug))
+
+	if req.Name == "" || req.Slug == "" {
+		writeJSONError(w, "Name and slug are required", http.StatusBadRequest)
+		return
+	}
+
+	query := `INSERT INTO categories (name, slug, parent_id) VALUES ($1, $2, $3)`
+	_, err := h.DB.Exec(r.Context(), query, req.Name, req.Slug, req.ParentID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeJSONError(w, "Category slug already exists", http.StatusConflict)
+			return
+		}
+		writeJSONError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Category created",
+	})
+}
+
+func (h *CategoryHandler) UpdateCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r)
+	if !ok {
+		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if claims.Role != "admin" {
+		writeJSONError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeJSONError(w, "Invalid category id", http.StatusBadRequest)
+		return
+	}
+
+	var req models.UpdateCategoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.ParentID != nil && *req.ParentID == id {
+		writeJSONError(w, "A category cannot be its own parent", http.StatusBadRequest)
+		return
+	}
+
+	req.Name = strings.TrimSpace(req.Name)
+	req.Slug = strings.ToLower(strings.TrimSpace(req.Slug))
+	if req.Name == "" || req.Slug == "" {
+		writeJSONError(w, "Name and slug are required", http.StatusBadRequest)
+		return
+	}
+
+	query := `UPDATE categories SET name = $1, slug = $2, parent_id = $3 WHERE id = $4`
+
+	res, err := h.DB.Exec(r.Context(), query, req.Name, req.Slug, req.ParentID, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			writeJSONError(w, "Category slug already exists", http.StatusConflict)
+			return
+		}
+
+		log.Printf("UpdateCategoryHandler: update failed: %v", err)
+		writeJSONError(w, "Failed to update category", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected := res.RowsAffected()
+	if rowsAffected == 0 {
+		writeJSONError(w, "Category not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": "Category updated",
+	})
+}
+
+func (h *CategoryHandler) DeleteCategoryHandler(w http.ResponseWriter, r *http.Request) {
+	claims, ok := middleware.GetUserClaims(r)
+	if !ok {
+		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if claims.Role != "admin" {
+		writeJSONError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		writeJSONError(w, "Invalid category ID", http.StatusBadRequest)
+		return
+	}
+
+	query := `DELETE FROM categories WHERE id = $1`
+	res, err := h.DB.Exec(r.Context(), query, id)
+	if err != nil {
+		writeJSONError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected := res.RowsAffected()
+	if rowsAffected == 0 {
+		writeJSONError(w, "Category not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
