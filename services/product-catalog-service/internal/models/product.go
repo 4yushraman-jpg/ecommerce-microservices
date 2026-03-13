@@ -22,3 +22,12 @@ type CreateProductRequest struct {
 	CategoryID    int    `json:"category_id"`
 	StockQuantity int    `json:"stock_quantity"`
 }
+
+type UpdateProductRequest struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Price         int    `json:"price"`
+	SKU           string `json:"sku"`
+	CategoryID    int    `json:"category_id"`
+	StockQuantity int    `json:"stock_quantity"`
+}
