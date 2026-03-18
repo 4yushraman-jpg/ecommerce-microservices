@@ -1,0 +1,6 @@
+services:
+  gateway:
+    # Expose the dashboard only in local dev
+    ports:
+      - "80:80"
+      - "8088:8080"

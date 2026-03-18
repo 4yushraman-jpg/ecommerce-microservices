@@ -1,0 +1,169 @@
+services:
+  gateway:
+    image: traefik:v3.6.2
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+      - "8088:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - ecommerce
+
+  migrator:
+    image: postgres:16-alpine
+    depends_on:
+      users-db:
+        condition: service_healthy
+      products-db:
+        condition: service_healthy
+      carts-db:
+        condition: service_healthy
+    environment:
+      - PGPASSWORD=postgres
+    volumes:
+      - ./services/user-service/internal/database/migrations:/migrations/user:ro
+      - ./services/product-catalog-service/internal/database/migrations:/migrations/product:ro
+      - ./services/cart-service/internal/database/migrations:/migrations/cart:ro
+    command: >
+      sh -ec "
+        echo 'Running user-service migrations...' &&
+        psql -h users-db -U postgres -d users -f /migrations/user/001_init.sql &&
+        psql -h users-db -U postgres -d users -f /migrations/user/002_add_name.sql &&
+        echo 'Running product-catalog-service migrations...' &&
+        psql -h products-db -U postgres -d products -f /migrations/product/001_init.sql &&
+        echo 'Running cart-service migrations...' &&
+        psql -h carts-db -U postgres -d carts -f /migrations/cart/001_init.sql &&
+        echo 'All migrations applied.'
+      "
+    restart: "no"
+    networks:
+      - ecommerce
+
+  user-service:
+    build:
+      context: ./services/user-service
+    environment:
+      - DATABASE_URL=${USER_DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=8080
+    depends_on:
+      users-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.user.rule=PathPrefix(`/user`)
+      - traefik.http.routers.user.entrypoints=web
+      - traefik.http.middlewares.user-stripprefix.stripprefix.prefixes=/user
+      - traefik.http.routers.user.middlewares=user-stripprefix
+      - traefik.http.services.user.loadbalancer.server.port=8080
+    networks:
+      - ecommerce
+
+  product-catalog-service:
+    build:
+      context: ./services/product-catalog-service
+    environment:
+      - DATABASE_URL=${PRODUCT_DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=8080
+    depends_on:
+      products-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.catalog.rule=PathPrefix(`/catalog`)
+      - traefik.http.routers.catalog.entrypoints=web
+      - traefik.http.middlewares.catalog-stripprefix.stripprefix.prefixes=/catalog
+      - traefik.http.routers.catalog.middlewares=catalog-stripprefix
+      - traefik.http.services.catalog.loadbalancer.server.port=8080
+    networks:
+      - ecommerce
+
+  cart-service:
+    build:
+      context: ./services/cart-service
+    environment:
+      - DATABASE_URL=${CART_DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=8080
+    depends_on:
+      carts-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.cart.rule=PathPrefix(`/cart`)
+      - traefik.http.routers.cart.entrypoints=web
+      - traefik.http.middlewares.cart-stripprefix.stripprefix.prefixes=/cart
+      - traefik.http.routers.cart.middlewares=cart-stripprefix
+      - traefik.http.services.cart.loadbalancer.server.port=8080
+    networks:
+      - ecommerce
+
+  users-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=users
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - users_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d users"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  products-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=products
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - products_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d products"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  carts-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=carts
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - carts_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d carts"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  users_db_data:
+  products_db_data:
+  carts_db_data:
+
+networks:
+  ecommerce:
+    driver: bridge

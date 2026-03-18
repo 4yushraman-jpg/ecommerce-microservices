@@ -6,7 +6,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TABLE categories (
+CREATE TABLE IF NOT EXISTS categories (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
@@ -19,7 +19,7 @@ CREATE TABLE categories (
         ON DELETE CASCADE
 );
 
-CREATE TABLE products (
+CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     description TEXT,
@@ -35,4 +35,12 @@ CREATE TABLE products (
         REFERENCES categories(id)
         ON DELETE CASCADE
 );
-CREATE TRIGGER set_timestamp_products BEFORE UPDATE ON products FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp();
+
+DO $$
+BEGIN
+  IF to_regclass('public.products') IS NOT NULL THEN
+    EXECUTE 'DROP TRIGGER IF EXISTS set_timestamp_products ON products';
+    EXECUTE 'CREATE TRIGGER set_timestamp_products BEFORE UPDATE ON products FOR EACH ROW EXECUTE PROCEDURE trigger_set_timestamp()';
+  END IF;
+END
+$$;
