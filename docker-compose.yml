@@ -24,12 +24,15 @@ services:
         condition: service_healthy
       carts-db:
         condition: service_healthy
+      orders-db:
+        condition: service_healthy
     environment:
       - PGPASSWORD=postgres
     volumes:
       - ./services/user-service/internal/database/migrations:/migrations/user:ro
       - ./services/product-catalog-service/internal/database/migrations:/migrations/product:ro
       - ./services/cart-service/internal/database/migrations:/migrations/cart:ro
+      - ./services/order-service/internal/database/migrations:/migrations/order:ro
     command: >
       sh -ec "
         echo 'Running user-service migrations...' &&
@@ -39,6 +42,9 @@ services:
         psql -h products-db -U postgres -d products -f /migrations/product/001_init.sql &&
         echo 'Running cart-service migrations...' &&
         psql -h carts-db -U postgres -d carts -f /migrations/cart/001_init.sql &&
+        echo 'All migrations applied.'
+        echo 'Running order-service migrations...' &&
+        psql -h orders-db -U postgres -d orders -f /migrations/order/001_init.sql &&
         echo 'All migrations applied.'
       "
     restart: "no"
@@ -111,6 +117,28 @@ services:
     networks:
       - ecommerce
 
+  order-service:
+    build:
+      context: ./services/order-service
+    environment:
+      - DATABASE_URL=${ORDER_DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - PORT=8080
+    depends_on:
+      orders-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.order.rule=PathPrefix(`/order`)
+      - traefik.http.routers.order.entrypoints=web
+      - traefik.http.middlewares.order-stripprefix.stripprefix.prefixes=/order
+      - traefik.http.routers.order.middlewares=order-stripprefix
+      - traefik.http.services.order.loadbalancer.server.port=8080
+    networks:
+      - ecommerce
+
   users-db:
     image: postgres:16-alpine
     environment:
@@ -159,10 +187,27 @@ services:
       timeout: 5s
       retries: 5
 
+  orders-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=orders
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - orders_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orders"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   users_db_data:
   products_db_data:
   carts_db_data:
+  orders_db_data:
 
 networks:
   ecommerce:
