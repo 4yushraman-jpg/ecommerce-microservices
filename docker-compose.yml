@@ -15,6 +15,25 @@ services:
     networks:
       - ecommerce
 
+  kafka:
+    image: bitnami/kafka:3.6
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    volumes:
+      - kafka_data:/bitnami/kafka
+    networks:
+      - ecommerce
+
   migrator:
     image: postgres:16-alpine
     depends_on:
@@ -26,6 +45,10 @@ services:
         condition: service_healthy
       orders-db:
         condition: service_healthy
+      payments-db:         # <-- NEW
+        condition: service_healthy
+      notifications-db:    # <-- NEW
+        condition: service_healthy
     environment:
       - PGPASSWORD=postgres
     volumes:
@@ -33,6 +56,8 @@ services:
       - ./services/product-catalog-service/internal/database/migrations:/migrations/product:ro
       - ./services/cart-service/internal/database/migrations:/migrations/cart:ro
       - ./services/order-service/internal/database/migrations:/migrations/order:ro
+      - ./services/payment-service/internal/database/migrations:/migrations/payment:ro         # <-- NEW
+      - ./services/notification-service/internal/database/migrations:/migrations/notification:ro # <-- NEW
     command: >
       sh -ec "
         echo 'Running user-service migrations...' &&
@@ -42,9 +67,12 @@ services:
         psql -h products-db -U postgres -d products -f /migrations/product/001_init.sql &&
         echo 'Running cart-service migrations...' &&
         psql -h carts-db -U postgres -d carts -f /migrations/cart/001_init.sql &&
-        echo 'All migrations applied.'
         echo 'Running order-service migrations...' &&
         psql -h orders-db -U postgres -d orders -f /migrations/order/001_init.sql &&
+        echo 'Running payment-service migrations...' &&
+        psql -h payments-db -U postgres -d payments -f /migrations/payment/001_init.sql &&
+        echo 'Running notification-service migrations...' &&
+        psql -h notifications-db -U postgres -d notifications -f /migrations/notification/001_init.sql &&
         echo 'All migrations applied.'
       "
     restart: "no"
@@ -139,6 +167,41 @@ services:
     networks:
       - ecommerce
 
+  payment-service:
+    build:
+      context: ./services/payment-service
+    env_file:
+      - ./services/payment-service/.env
+    depends_on:
+      payments-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.payment.rule=PathPrefix(`/payments`)
+      - traefik.http.routers.payment.entrypoints=web
+      - traefik.http.services.payment.loadbalancer.server.port=8080
+    networks:
+      - ecommerce
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+    env_file:
+      - ./services/notification-service/.env
+    depends_on:
+      notifications-db:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+    networks:
+      - ecommerce
+
   users-db:
     image: postgres:16-alpine
     environment:
@@ -203,11 +266,47 @@ services:
       timeout: 5s
       retries: 5
 
+  payments-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=payments
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - payments_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payments"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  notifications-db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=notifications
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - notifications_db_data:/var/lib/postgresql/data
+    networks:
+      - ecommerce
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
 volumes:
   users_db_data:
   products_db_data:
   carts_db_data:
   orders_db_data:
+  payments_db_data:      
+  notifications_db_data: 
+  kafka_data:           
 
 networks:
   ecommerce:
