@@ -11,9 +11,11 @@ import (
 	"os"
 	"time"
 
+	"payment-service/internal/events"
 	"payment-service/internal/middleware"
 	"payment-service/internal/models"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stripe/stripe-go/v76"
 	"github.com/stripe/stripe-go/v76/checkout/session"
@@ -25,6 +27,7 @@ type PaymentHandler struct {
 	JWTSecret     []byte
 	WebhookSecret string
 	HTTPClient    *http.Client
+	KafkaProducer *events.KafkaProducer
 }
 
 type OrderResponse struct {
@@ -282,18 +285,33 @@ func (h *PaymentHandler) handleCheckoutCompleted(ctx context.Context, s *stripe.
 		WHERE provider = 'stripe'
 		AND provider_transaction_id = $2
 		AND status = $3
+		RETURNING order_id, user_id, amount, currency
 	`
 
-	res, err := h.DB.Exec(ctx, query, models.PaymentStatusSucceeded, s.ID, models.PaymentStatusPending)
+	var orderID, userID, amount int64
+	var currency string
+	err := h.DB.QueryRow(ctx, query, models.PaymentStatusSucceeded, s.ID, models.PaymentStatusPending).Scan(&orderID, &userID, &amount, &currency)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			log.Printf("no rows updated (already processed?): session_id=%s", s.ID)
+			return nil
+		}
 		return err
 	}
 
-	if res.RowsAffected() == 0 {
-		log.Printf("no rows updated (already processed?): session_id=%s", s.ID)
-	}
+	if h.KafkaProducer != nil {
+		event := events.PaymentEventSucceeded{
+			OrderID:  orderID,
+			UserID:   userID,
+			Amount:   amount,
+			Currency: currency,
+		}
 
-	// TODO: Notify order-service here (async preferred)
+		err = h.KafkaProducer.PublishPaymentSucceeded(ctx, event)
+		if err != nil {
+			log.Printf("CRITICAL: Failed to publish Kafka event for Order %d: %v", orderID, err)
+		}
+	}
 
 	return nil
 }
